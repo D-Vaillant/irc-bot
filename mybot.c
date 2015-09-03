@@ -23,16 +23,24 @@
 #include <netdb.h>
 #include <stdarg.h>
 
+#define NICK "Cendenbot"
+#define CHANNEL "#thomsonslantern"
+#define NETWORK "irc.freenode.net"
+
 #define MAX_SAVED_TELLS 10
 #define MAX_USERS 10
 #define MAX_USERNAME_LENGTH 30
 
+// TODO: Move "where" to tellStack.
 typedef struct {
     char message[512];
     char recipient[MAX_USERNAME_LENGTH];
+    char sender[MAX_USERNAME_LENGTH];
     char where[30];
 } tell;
 
+// TODO: Add in "where" to allow for multiple stacks for the same user in different
+//       locations. Currently only really works with one channel.
 typedef struct {
     tell history[MAX_SAVED_TELLS];
     char recipient[MAX_USERNAME_LENGTH];
@@ -52,7 +60,8 @@ static tellStack tellHistory[MAX_USERS];
 static char userWatchList[MAX_USERS][MAX_USERNAME_LENGTH] = { 0 };
 static tellStruct tellRecord = 
     {
-        .list = { { .history = { { .message = "", .recipient = "", .where = "" } },
+        .list = { { .history = { { .message = "", .recipient = "", 
+                                   .sender = "" , .where = "" } },
                     .recipient = "",
                     .length = 0 } },
         .users = {""},
@@ -101,10 +110,11 @@ void send_msg(char *target, char *msg) {
  *                6: Buffer overflow in tellStack (too many tells).
  * =====================================================================================
  */
-int tell_push(char *where, char *recipient, char *message) {
+int tell_push(char *where, char *recipient, char *user, char *message) {
     tell *T = malloc(sizeof(tell));
     if(protected_strcpy(T->where, where)) return 1;
     if(protected_strcpy(T->recipient, recipient)) return 1;
+    if(protected_strcpy(T->sender, user)) return 1;
     if(protected_strcpy(T->message, message)) return 1;
     printf("Assignment to tell structure successful.\n");
 
@@ -131,10 +141,7 @@ int tell_push(char *where, char *recipient, char *message) {
             if(protected_strcpy(stack->recipient, recipient)) return 1;
             printf("tellStack initialized.\n");
 
-            // Adding the tellStack to tellStruct.
-            (tellRecord.list)[stack->length] = *stack;
-            protected_strcpy((tellRecord.users)[stack->length], T->recipient);
-            ++tellRecord.length;
+
         } else {
             return 5;
         }
@@ -142,10 +149,41 @@ int tell_push(char *where, char *recipient, char *message) {
 
     if(stack->length < MAX_SAVED_TELLS) {
         (stack->history)[stack->length] = *T;
-        printf("%dth tell added to the stack.", stack->history);
-        stack->length++;
+        printf("%dth tell added to the stack.\n", stack->length);
+        (stack->length)++;
+        if(!stack_exists) {
+            // Adding the tellStack to tellStruct.
+            (tellRecord.list)[stack->length] = *stack;
+            protected_strcpy((tellRecord.users)[stack->length], T->recipient);
+            ++tellRecord.length;
+        }
     } else { return 6; }
 
+    return 0;
+}
+
+
+/* 
+ * ===  FUNCTION  ======================================================================
+ *         Name:  tell_pop
+ *  Description:  Given an index, pops a tell from the corresponding tellStack located
+ *                in a tellStruct.
+ *   Error MSGS:  11: index results in tellStruct buffer overflow.
+ * =====================================================================================
+ */
+int tell_pop(int index) {
+    if(index < tellRecord.length) {
+        tellStack *stack = &tellRecord.list[index];
+        (stack->length)--;
+        tell retrieved = stack->history[stack->length];
+        char *message;
+        asprintf(&message, "%s: %s said %s", retrieved.recipient,
+                                  retrieved.sender, retrieved.message);
+        printf("%s and %s.\n", retrieved.where, message);
+        send_msg(retrieved.where, message);
+    } else {
+      return 11; 
+    }
     return 0;
 }
 
@@ -160,11 +198,20 @@ void core(char *user, char *command, char *where, char *target, char *message)
     // responds to PMs
     if(!is_channel(where)) strcpy(user, where);
 
-    // implements !tell
+    // implements responding to tells
+    int n = 0;
+    for(n; n < tellRecord.length; n++) {
+        if(!strcmp(tellRecord.users[n],user)) {
+            tell_pop(n);
+        }
+    }
+
+
+    // implements .tell
     // USAGE: !tell NICK MESSAGE
     // Next time NICK sends a PRIVMSG, bot will notify NICK of the message.
     // Uses *where to determine where to send the PRIVMSG.
-    if(!strncmp(message, "!tell ", 5)) {
+    if(!strncmp(message, ".tell ", 5)) {
         printf("Calling TELL function.\n");
         int s = 6;
         while(message[s] != ' ' && message[s] != '\0') {
@@ -174,7 +221,7 @@ void core(char *user, char *command, char *where, char *target, char *message)
         else {
             message[s] = '\0';
             char *outmsg;
-            switch(tell_push(where, &message[6], &message[s+1])) {
+            switch(tell_push(where, &message[6], user, &message[s+1])) {
                 case 1: 
                     asprintf(&outmsg, "%s: Sorry, something went wrong.", user);
                     send_msg(where, outmsg);
@@ -199,9 +246,8 @@ void core(char *user, char *command, char *where, char *target, char *message)
 }
 
 int main() {
-    char *nick = "Cendenbot";
-    //char *channel = "#thomsonslantern";
-    char *channel = "#CendenbotHaus";
+    char *nick = NICK;
+    char *channel = "#thomsonslantern";
     char *host = "irc.freenode.net";
     char *port = "6667";
 
