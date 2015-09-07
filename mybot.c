@@ -25,7 +25,7 @@
 #include <stdarg.h>
 
 #define NICK "Cendenbot"
-#define CHANNEL "#Cendenhaus"
+#define CHANNEL "#thomsonslantern"
 #define NETWORK "irc.freenode.net"
 
 #define MAX_SAVED_TELLS 10
@@ -488,6 +488,7 @@ int main() {
 
                     if (!strncmp(command, "001", 3) && channel != NULL) {
                         join(channel); 
+
                     } else if (!strncmp(command, "433", 3)) {
                         //int x = strlen(nick); 
                         char *new_nick;
@@ -498,8 +499,8 @@ int main() {
                             new_nick = "Cenderbot"; // Do something here.
                             nick_count--;
                         }
-
                         change_nick(new_nick);
+
                     } else if (!strncmp(command, "PRIVMSG", 7) || 
                                !strncmp(command, "NOTICE", 6)) {
                         // break out if no message or location
