@@ -75,12 +75,12 @@ void tell_kill(tell *victim) {
 
     if (victim->message) {
         free(victim->message);
-        victim->message = "";
+        victim->message = NULL;
     }
 
     if (victim->sender) {
         free(victim->sender);
-        victim->sender = "";
+        victim->sender = NULL;
     }
 }
 
