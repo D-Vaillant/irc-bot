@@ -16,6 +16,7 @@
  * =====================================================================================
  */
 
+#define _GNU_SOURCE
 #include <stdlib.h>
 #include <stdio.h>
 #include <unistd.h>
@@ -24,64 +25,196 @@
 #include <stdarg.h>
 
 #define NICK "Cendenbot"
-#define CHANNEL "#thomsonslantern"
+#define CHANNEL "#Cendenhaus"
 #define NETWORK "irc.freenode.net"
 
 #define MAX_SAVED_TELLS 10
 #define MAX_USERS 10
-#define MAX_USERNAME_LENGTH 30
 
-// TODO: Move "where" to tellStack.
-typedef struct {
-    char message[512];
-    char recipient[MAX_USERNAME_LENGTH];
-    char sender[MAX_USERNAME_LENGTH];
-    char where[30];
+typedef struct tell {
+    char *message;
+    char *sender;
 } tell;
 
-// TODO: Add in "where" to allow for multiple stacks for the same user in different
-//       locations. Currently only really works with one channel.
-typedef struct {
+typedef struct tellStack {
     tell history[MAX_SAVED_TELLS];
-    char recipient[MAX_USERNAME_LENGTH];
+    char *recipient;
+    char *where;
     int length;
 } tellStack;
 
-typedef struct {
+typedef struct tellStruct {
     tellStack list[MAX_USERS];
-    char users[MAX_USERS][MAX_USERNAME_LENGTH];
+    char *users[MAX_USERS];
+    char *wheres[MAX_USERS];
     int length;
 } tellStruct;
 
 int conn;
 char sbuf[512];
 
-static tellStack tellHistory[MAX_USERS];
-static char userWatchList[MAX_USERS][MAX_USERNAME_LENGTH] = { 0 };
 static tellStruct tellRecord = 
     {
-        .list = { { .history = { { .message = "", .recipient = "", 
-                                   .sender = "" , .where = "" } },
+        /*.list = { { .history   = { { .message = "", .sender = "" } },
                     .recipient = "",
-                    .length = 0 } },
-        .users = {""},
+                    .where     = "",
+                    .length    = 0 } }, */
+        .users = { NULL },
+        .wheres = { NULL },
         .length = 0
     };
 
-int protected_strcpy(char *destination, char *source) {
-    /*
-    if(strlen(destination) < strlen(source)) {
-        return 1;
-    } else {*/
-    strcpy(destination, source);
+/* 
+ * ===  FUNCTION  ======================================================================
+ *         Name:  tell_kill
+ *  Description:  Frees up all the memory in a tell.
+ * =====================================================================================
+ */
+void tell_kill(tell *victim) {
+    if (victim == NULL) return;
+
+    if (victim->message) {
+        free(victim->message);
+        victim->message = "";
+    }
+
+    if (victim->sender) {
+        free(victim->sender);
+        victim->sender = "";
+    }
+}
+
+/* 
+ * ===  FUNCTION  ======================================================================
+ *         Name:  tellStack_kill
+ *  Description:  Frees up all the memory in a tellStack.
+ * =====================================================================================
+ */
+void tellStack_kill(tellStack *victim) {
+    if (victim->recipient) {
+        free(victim->recipient);
+        victim->recipient = NULL;
+    }
+
+    if (victim->where) {
+        free(victim->where);
+        victim->where = NULL;
+    }
+    
+    int n;
+    for (n = 0; n < victim->length; n++) tell_kill(&(victim->history[n]));
+
+    victim->length = 0;
+}
+
+/* 
+ * ===  FUNCTION  ======================================================================
+ *         Name:  tell_copy
+ *  Description:  Transfers data from tell *in to tell *out.
+ * =====================================================================================
+ */
+int tell_copy(tell *out, tell *in) {
+    tell_kill(out);
+
+    asprintf(&out->message, in->message);
+    asprintf(&out->sender, in->sender);
+
     return 0;
 }
+
+/* 
+ * ===  FUNCTION  ======================================================================
+ *         Name:  tellStack_copy
+ *  Description:  Transfers data from tellStack *in to tellStack *out.
+ * =====================================================================================
+ */
+int tellStack_copy(tellStack *out, tellStack *in) {
+    tellStack_kill(out);
+
+    out->length = in->length;
+    asprintf(&out->recipient, in->recipient);
+    asprintf(&out->where, in->where);
+
+    int i;
+    for (i = 0; i < in->length; i++) {
+        tell_copy(&out->history[i], &in->history[i]);
+    }
+
+    return 0;
+}
+
+/* 
+ * ===  FUNCTION  ======================================================================
+ *         Name:  tellRecord_kill_stack
+ *  Description:  Frees up all memory at tellRecord.list[index].
+ *     Warnings:  Doesn't prevent against accessing the memory!
+ * =====================================================================================
+ */
+void tellRecord_kill_stack(int index) {
+    if (index < tellRecord.length) {
+        tellStack_kill(&tellRecord.list[index]);
+
+        if(tellRecord.users[index]) {
+            free(tellRecord.users[index]);
+            tellRecord.users[index] = NULL;
+        }
+
+        if(tellRecord.wheres[index]) {
+            free(tellRecord.wheres[index]);
+            tellRecord.wheres[index] = NULL;
+        }
+
+    } else {
+        printf("Don't do that!\n");
+    }
+}
+
+/* 
+ * ===  FUNCTION  ======================================================================
+ *         Name:  tellRecord_remove_stack
+ *  Description:  Given an index, removes the stack and user/where pair at that index
+ *                and scoots all the other values down.
+ *   Error MSGS:  2 - tellRecord overflow.
+ * =====================================================================================
+ */
+int tellRecord_remove_stack(int index) {
+    if (index >= tellRecord.length) return 2;
+
+    /* EXAMPLE:
+     *   A B X D E -
+     *   A B - D E -
+     *   A B D D E -
+     *   A B D - E
+     *   A B D E E -
+     * And after the tellRecord_kill_stack call:
+     *   A B D E - - */
+    for (index; index < tellRecord.length-1; index++) {
+        free(tellRecord.users[index]);
+        asprintf(&tellRecord.users[index], tellRecord.users[index+1]);
+
+        free(tellRecord.wheres[index]);
+        asprintf(&tellRecord.wheres[index], tellRecord.wheres[index+1]);
+
+        tellStack_copy(&tellRecord.list[index], &tellRecord.list[index+1]);
+    }
+    tellRecord_kill_stack(index);
+    tellRecord.length--;
+
+    return 0;
+}
+
 
 int is_channel(char *where) {
     return where[0] == '#' || where[0] == '&' ||
            where[0] == '+' || where[0] == '!';
 }
 
+/* 
+ * ===  FUNCTION  ======================================================================
+ *         Name:  raw
+ *  Description:  Sends a formatted string to the network.
+ * =====================================================================================
+ */
 void raw(char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
@@ -95,73 +228,107 @@ void join(char *chan) {
     raw("JOIN %s\r\n", chan);
 }
 
+void change_nick(char *nick) {
+    raw("NICK %s\r\n", nick);
+}
+
+/* 
+ * ===  FUNCTION  ======================================================================
+ *         Name:  send_msg
+ *  Description:  Sends *msg to *target.
+ * =====================================================================================
+ */
 void send_msg(char *target, char *msg) {
     raw("PRIVMSG %s :%s\n", target, msg);
 }
 
-
 /* 
  * ===  FUNCTION  ======================================================================
  *         Name:  tell_push
- *  Description:  Creates a tell structure and adds it to a tell stack.
- *                Creates the necessary tell stack if it doesn't exist.
- *   Error MSGS:  1: Buffer overflow in copying where, recipient, or message.
+ *  Description:  Creates a tell structure and adds it to a tellStack.
+ *                Creates the necessary tellStack if it doesn't exist.
+ *   Error MSGS:  1: Failure to allocate space for tell information..
  *                5: Buffer overflow in tellStruct (too many tellStacks).
  *                6: Buffer overflow in tellStack (too many tells).
  * =====================================================================================
  */
-int tell_push(char *where, char *recipient, char *user, char *message) {
-    tell *T = malloc(sizeof(tell));
-    if(protected_strcpy(T->where, where)) return 1;
-    if(protected_strcpy(T->recipient, recipient)) return 1;
-    if(protected_strcpy(T->sender, user)) return 1;
-    if(protected_strcpy(T->message, message)) return 1;
-    printf("Assignment to tell structure successful.\n");
-
+int tell_push(char *where, char *recipient, char *sender, char *message) {
     int stack_exists = 0;
     int n;
+
     for(n = 0; n < tellRecord.length; n++) {
-        if(!strcmp(tellRecord.users[n], T->recipient)) {
+        if (!strcmp(tellRecord.users[n], recipient) &&
+            !strcmp(tellRecord.wheres[n], where)) {
             printf("tellStack found.\n");
             stack_exists = 1;
             break;
-        } 
+        } /* checks if a tellStack corresponds to the given tell */ 
     }
 
-    tellStack *stack;
-    if(stack_exists) {
-        printf("Grabbing the pointer to the tellStack.\n");
-        stack = &tellRecord.list[n];
+    if (tellRecord.length >= MAX_USERS) return 5;
+    tellStack *stack = &tellRecord.list[n];
+    int len = tellRecord.length; /* because I like shorter lines */
+
+    if (stack_exists) {
+        printf("Grabbed the pointer to the tellStack.\n");
     } else {
-        // Basic overflow checking for tellStruct.
-        if(tellRecord.length < MAX_USERS) {
-            // Initializing the tellStack.
-            stack = malloc(sizeof(tellStack));
-            stack->length = 0;
-            if(protected_strcpy(stack->recipient, recipient)) return 1;
-            printf("tellStack initialized.\n");
+        // Initializing the tellStack.
+        stack->length = 0;
 
-
-        } else {
-            return 5;
+        /* copying recipient to the stack and to tellRecord.users */
+        if (asprintf(&stack->recipient, recipient) < 0) return 1;
+        if (asprintf(&tellRecord.users[len], recipient) < 0) {
+            return 1;
         }
+
+        /* mutatis mutandis the above for wheres */
+        if (asprintf(&stack->where, where) < 0) return 1;
+        if (asprintf(&tellRecord.wheres[len], where) < 0) {
+            return 1;
+        } 
+        printf("tellStack initialized.\n");
+
+        tellRecord.length++;
     }
 
-    if(stack->length < MAX_SAVED_TELLS) {
-        (stack->history)[stack->length] = *T;
-        printf("%dth tell added to the stack.\n", stack->length);
-        (stack->length)++;
-        if(!stack_exists) {
-            // Adding the tellStack to tellStruct.
-            (tellRecord.list)[stack->length] = *stack;
-            protected_strcpy((tellRecord.users)[stack->length], T->recipient);
-            ++tellRecord.length;
-        }
-    } else { return 6; }
+    if(stack->length >= MAX_SAVED_TELLS) return 6; 
 
+    /* grabbing the pointer to the next free tell location */
+    tell *T = &((stack->history)[stack->length]);
+    stack->length++;
+    printf("tell #%d added to the stack.\n", stack->length);
+
+    /* saving the message and sender to the tell */
+    if (asprintf(&T->sender, sender) < 0) return 1;
+    if (asprintf(&T->message, message) < 0) return 1;
+    printf("Assignment to tell structure successful.\n");
+
+    /* acknowledging saved tell */
+    char *msgy;
+    if(asprintf(&msgy, "%s: Message queued for %s.", sender, recipient) < 0) {
+       return 1; } 
+    send_msg(where, msgy);
     return 0;
 }
 
+/* 
+ * ===  FUNCTION  ======================================================================
+ *         Name:  should_tell_pop
+ *  Description:  Takes a user and a target and checks if there's a non-empty tellStack
+ *                that corresponds to them.
+ * =====================================================================================
+ */
+int should_tell_pop(char *recipient, char *where) {
+    int n;
+    for(n = 0; n < tellRecord.length; n++) {
+        if(!strcmp(tellRecord.users[n], recipient) &&
+           !strcmp(tellRecord.wheres[n], where))
+        {
+            return n;
+        }
+    }
+    return -1;
+}
 
 /* 
  * ===  FUNCTION  ======================================================================
@@ -172,18 +339,22 @@ int tell_push(char *where, char *recipient, char *user, char *message) {
  * =====================================================================================
  */
 int tell_pop(int index) {
-    if(index < tellRecord.length) {
-        tellStack *stack = &tellRecord.list[index];
-        (stack->length)--;
-        tell retrieved = stack->history[stack->length];
-        char *message;
-        asprintf(&message, "%s: %s said %s", retrieved.recipient,
-                                  retrieved.sender, retrieved.message);
-        printf("%s and %s.\n", retrieved.where, message);
-        send_msg(retrieved.where, message);
-    } else {
-      return 11; 
-    }
+    if(index >= tellRecord.length) return 11; 
+
+    tellStack *stack = &tellRecord.list[index];
+    tell *retrieved = &stack->history[stack->length-1];
+
+    char *message;
+    asprintf(&message, "%s: %s said %s", stack->recipient,
+                       retrieved->sender, retrieved->message);
+
+    char *where = is_channel(stack->where) ? stack->where : stack->recipient;
+    send_msg(where, message);
+
+    tell_kill(retrieved);
+    if(stack->length == 1) {
+        tellRecord_remove_stack(index); 
+    } else { stack->length--; }
     return 0;
 }
 
@@ -195,20 +366,12 @@ int tell_pop(int index) {
  */
 void core(char *user, char *command, char *where, char *target, char *message)
 {
-    // responds to PMs
-    if(!is_channel(where)) strcpy(user, where);
-
     // implements responding to tells
-    int n = 0;
-    for(n; n < tellRecord.length; n++) {
-        if(!strcmp(tellRecord.users[n],user)) {
-            tell_pop(n);
-        }
-    }
-
+    int q = should_tell_pop(user, where);
+    if (q >= 0) tell_pop(q);
 
     // implements .tell
-    // USAGE: !tell NICK MESSAGE
+    // USAGE: .tell NICK MESSAGE
     // Next time NICK sends a PRIVMSG, bot will notify NICK of the message.
     // Uses *where to determine where to send the PRIVMSG.
     if(!strncmp(message, ".tell ", 5)) {
@@ -247,8 +410,9 @@ void core(char *user, char *command, char *where, char *target, char *message)
 
 int main() {
     char *nick = NICK;
-    char *channel = "#thomsonslantern";
-    char *host = "irc.freenode.net";
+    int nick_count = 0;
+    char *channel = CHANNEL;
+    char *host = NETWORK;
     char *port = "6667";
 
     char *user, *command, *where, *message, *sep, *target;
@@ -265,7 +429,7 @@ int main() {
 
     // identification!
     raw("USER %s 0 * :%s\r\n", nick, nick);
-    raw("NICK %s\r\n", nick);
+    change_nick(nick);
 
     // read the connection buffer
     while ((sl = read(conn, sbuf, 512))) {
@@ -310,20 +474,32 @@ int main() {
                             if (j == l - 1) continue;
                             // set the beginning of next word
                             start = j + 1;
-                        // if we hit : and we have user, command, and where,
-                        // we've reached the message.
+                        /* if we hit : and we have user, command, and where,
+                              we've reached the message. */
                         } else if (buf[j] == ':' && wordcount == 3) {
                             // making sure that we don't overflow here
                             if (j < l - 1) message = buf + j + 1;
                             break;
-                        }
-                    }
+                        } /* if we reach a space */
+                    } /* for each character in message */
 
                     // break out if we don't have a command
                     if (wordcount < 2) continue;
 
                     if (!strncmp(command, "001", 3) && channel != NULL) {
                         join(channel); 
+                    } else if (!strncmp(command, "433", 3)) {
+                        //int x = strlen(nick); 
+                        char *new_nick;
+                        if (!nick_count) {
+                            new_nick = "Cendenbot_";
+                            nick_count++;
+                        } else {
+                            new_nick = "Cenderbot"; // Do something here.
+                            nick_count--;
+                        }
+
+                        change_nick(new_nick);
                     } else if (!strncmp(command, "PRIVMSG", 7) || 
                                !strncmp(command, "NOTICE", 6)) {
                         // break out if no message or location
@@ -332,10 +508,9 @@ int main() {
                             // cuts the nick from the IP stuff
                             user[sep - user] = '\0'; 
                         }
-                        if (is_channel(where)) { 
-                            target = where;
-                        } else target = user; 
                         
+                        target = (is_channel(where)) ? where : user;
+
                         // beginning actual processing
                         printf("[from: %s] [reply-with: %s] [where: %s]"
                                "[reply-to: %s] %s", user, command, where, 
@@ -343,10 +518,10 @@ int main() {
                         
 
                         core(user, command, where, target, message);
-                    }
-                }
-            }
-        }
-    }
+                    } /* if command is a PRIVMSG or a NOTICE */
+                } /* if msg begins with a : */
+            } /* if we're reached the end of sbuf */
+        } /* for each integer less than the length of sbuf */
+    } /* while the length of sbuf is non-zero */
     return 0;
 }
