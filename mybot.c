@@ -353,7 +353,7 @@ int tell_pop(int index) {
     tell *retrieved = &stack->history[stack->length-1];
 
     char *message;
-    if(asprintf(&message, "%s: %s said %s", stack->recipient,
+    if(asprintf(&message, "%s: %s said, '%s'", stack->recipient,
                 retrieved->sender, retrieved->message) < 0) return 1;
 
     char *where = is_channel(stack->where) ? stack->where : stack->recipient;
@@ -368,6 +368,17 @@ int tell_pop(int index) {
 
 /* 
  * ===  FUNCTION  ======================================================================
+ *         Name:  help
+ *  Description:  Currently, prints a help message about functions. Which amounts
+ *                to explaining how tell works.
+ * =====================================================================================
+ */
+void help(char *target, char *message, char *user) {
+    send_msg(target, "TELL Usage: '.tell USER MESSAGE'. Tells are stored in a stack.");
+}
+
+/* 
+ * ===  FUNCTION  ======================================================================
  *         Name:  core
  *  Description:  Takes processed input and redirects it to the appropriate functions.
  * =====================================================================================
@@ -378,11 +389,12 @@ int core(char *user, char *command, char *where, char *target, char *message)
     int q = should_tell_pop(user, where);
     if (q >= 0) tell_pop(q);
 
-    // implements .tell
+    // USAGE: .help
+    if(!strncmp(message, ".help", 5)) {
+        printf("Calling HELP function.\n");
+        help(target, message, user);
     // USAGE: .tell NICK MESSAGE
-    // Next time NICK sends a PRIVMSG, bot will notify NICK of the message.
-    // Uses *where to determine where to send the PRIVMSG.
-    if(!strncmp(message, ".tell ", 5)) {
+    } else if (!strncmp(message, ".tell ", 6)) {
         printf("Calling TELL function.\n");
         int s = 6;
         while(message[s] != ' ' && message[s] != '\0') {
