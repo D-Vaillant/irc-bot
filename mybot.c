@@ -64,6 +64,22 @@ static tellStruct tellRecord =
         .length = 0
     };
 
+
+/*-----------------------------------------------------------------------------
+ * ERROR MESSAGE CODES 
+ *    1: asprintf failure
+ *          Generally failure to allocate memory correctly.
+ *    2: tellRecord overflow
+ *          Attempting to add tellStacks past the maximum amount specified
+ *          by MAX_USERS. 
+ *    3: tellStack overflow
+ *          Attempting to add tells past the maximum amount specified by 
+ *          MAX_SAVED_TELLS.
+ *   -2: tellRecord underflow
+ *          Attempting to access tellStacks past the minimum index specified
+ *          by tellRecord.length.
+ *-----------------------------------------------------------------------------*/
+
 /* 
  * ===  FUNCTION  ======================================================================
  *         Name:  tell_kill
@@ -91,6 +107,8 @@ void tell_kill(tell *victim) {
  * =====================================================================================
  */
 void tellStack_kill(tellStack *victim) {
+    if (victim == NULL) return;
+
     if (victim->recipient) {
         free(victim->recipient);
         victim->recipient = NULL;
@@ -116,8 +134,8 @@ void tellStack_kill(tellStack *victim) {
 int tell_copy(tell *out, tell *in) {
     tell_kill(out);
 
-    asprintf(&out->message, in->message);
-    asprintf(&out->sender, in->sender);
+    if(asprintf(&out->message, in->message) < 0) return 1; 
+    if(asprintf(&out->sender, in->sender) < 0) return 1;
 
     return 0;
 }
@@ -132,8 +150,8 @@ int tellStack_copy(tellStack *out, tellStack *in) {
     tellStack_kill(out);
 
     out->length = in->length;
-    asprintf(&out->recipient, in->recipient);
-    asprintf(&out->where, in->where);
+    if(asprintf(&out->recipient, in->recipient) < 0) return 1;
+    if(asprintf(&out->where, in->where) < 0) return 1;
 
     int i;
     for (i = 0; i < in->length; i++) {
@@ -174,11 +192,10 @@ void tellRecord_kill_stack(int index) {
  *         Name:  tellRecord_remove_stack
  *  Description:  Given an index, removes the stack and user/where pair at that index
  *                and scoots all the other values down.
- *   Error MSGS:  2 - tellRecord overflow.
  * =====================================================================================
  */
 int tellRecord_remove_stack(int index) {
-    if (index >= tellRecord.length) return 2;
+    if (index >= tellRecord.length) return -2;
 
     /* EXAMPLE:
      *   A B X D E -
@@ -190,10 +207,12 @@ int tellRecord_remove_stack(int index) {
      *   A B D E - - */
     for (index; index < tellRecord.length-1; index++) {
         free(tellRecord.users[index]);
-        asprintf(&tellRecord.users[index], tellRecord.users[index+1]);
+        if(asprintf(&tellRecord.users[index],
+                    tellRecord.users[index+1]) < 0) return 1;
 
         free(tellRecord.wheres[index]);
-        asprintf(&tellRecord.wheres[index], tellRecord.wheres[index+1]);
+        if(asprintf(&tellRecord.wheres[index],
+                    tellRecord.wheres[index+1]) < 0) return 1;
 
         tellStack_copy(&tellRecord.list[index], &tellRecord.list[index+1]);
     }
@@ -224,6 +243,9 @@ void raw(char *fmt, ...) {
     write(conn, sbuf, strlen(sbuf));
 }
 
+/*-----------------------------------------------------------------------------
+ *  Channel Methods
+ *-----------------------------------------------------------------------------*/
 void join(char *chan) {
     raw("JOIN %s\r\n", chan);
 }
@@ -232,12 +254,6 @@ void change_nick(char *nick) {
     raw("NICK %s\r\n", nick);
 }
 
-/* 
- * ===  FUNCTION  ======================================================================
- *         Name:  send_msg
- *  Description:  Sends *msg to *target.
- * =====================================================================================
- */
 void send_msg(char *target, char *msg) {
     raw("PRIVMSG %s :%s\n", target, msg);
 }
@@ -247,9 +263,6 @@ void send_msg(char *target, char *msg) {
  *         Name:  tell_push
  *  Description:  Creates a tell structure and adds it to a tellStack.
  *                Creates the necessary tellStack if it doesn't exist.
- *   Error MSGS:  1: Failure to allocate space for tell information..
- *                5: Buffer overflow in tellStruct (too many tellStacks).
- *                6: Buffer overflow in tellStack (too many tells).
  * =====================================================================================
  */
 int tell_push(char *where, char *recipient, char *sender, char *message) {
@@ -265,33 +278,29 @@ int tell_push(char *where, char *recipient, char *sender, char *message) {
         } /* checks if a tellStack corresponds to the given tell */ 
     }
 
-    if (tellRecord.length >= MAX_USERS) return 5;
+    if (tellRecord.length >= MAX_USERS) return 2;
     tellStack *stack = &tellRecord.list[n];
     int len = tellRecord.length; /* because I like shorter lines */
 
     if (stack_exists) {
         printf("Grabbed the pointer to the tellStack.\n");
+        if(stack->length >= MAX_SAVED_TELLS) return 3; 
     } else {
         // Initializing the tellStack.
         stack->length = 0;
 
         /* copying recipient to the stack and to tellRecord.users */
         if (asprintf(&stack->recipient, recipient) < 0) return 1;
-        if (asprintf(&tellRecord.users[len], recipient) < 0) {
-            return 1;
-        }
+        if (asprintf(&tellRecord.users[len], recipient) < 0) return 1;
 
         /* mutatis mutandis the above for wheres */
         if (asprintf(&stack->where, where) < 0) return 1;
-        if (asprintf(&tellRecord.wheres[len], where) < 0) {
-            return 1;
-        } 
+        if (asprintf(&tellRecord.wheres[len], where) < 0) return 1;
+
         printf("tellStack initialized.\n");
 
         tellRecord.length++;
     }
-
-    if(stack->length >= MAX_SAVED_TELLS) return 6; 
 
     /* grabbing the pointer to the next free tell location */
     tell *T = &((stack->history)[stack->length]);
@@ -305,8 +314,8 @@ int tell_push(char *where, char *recipient, char *sender, char *message) {
 
     /* acknowledging saved tell */
     char *msgy;
-    if(asprintf(&msgy, "%s: Message queued for %s.", sender, recipient) < 0) {
-       return 1; } 
+    if(asprintf(&msgy, "%s: Message queued for %s.",
+                sender, recipient) < 0) return 1;
     send_msg(where, msgy);
     return 0;
 }
@@ -335,18 +344,17 @@ int should_tell_pop(char *recipient, char *where) {
  *         Name:  tell_pop
  *  Description:  Given an index, pops a tell from the corresponding tellStack located
  *                in a tellStruct.
- *   Error MSGS:  11: index results in tellStruct buffer overflow.
  * =====================================================================================
  */
 int tell_pop(int index) {
-    if(index >= tellRecord.length) return 11; 
+    if(index >= tellRecord.length) return -2; 
 
     tellStack *stack = &tellRecord.list[index];
     tell *retrieved = &stack->history[stack->length-1];
 
     char *message;
-    asprintf(&message, "%s: %s said %s", stack->recipient,
-                       retrieved->sender, retrieved->message);
+    if(asprintf(&message, "%s: %s said, '%s'", stack->recipient,
+                retrieved->sender, retrieved->message) < 0) return 1;
 
     char *where = is_channel(stack->where) ? stack->where : stack->recipient;
     send_msg(where, message);
@@ -360,11 +368,22 @@ int tell_pop(int index) {
 
 /* 
  * ===  FUNCTION  ======================================================================
+ *         Name:  help
+ *  Description:  Currently, prints a help message about functions. Which amounts
+ *                to explaining how tell works.
+ * =====================================================================================
+ */
+void help(char *target, char *message, char *user) {
+    send_msg(target, "TELL Usage: '.tell USER MESSAGE'. Tells are stored in a stack.");
+}
+
+/* 
+ * ===  FUNCTION  ======================================================================
  *         Name:  core
  *  Description:  Takes processed input and redirects it to the appropriate functions.
  * =====================================================================================
  */
-void core(char *user, char *command, char *where, char *target, char *message)
+int core(char *user, char *command, char *where, char *target, char *message)
 {
     // implements responding to tells
     int q = should_tell_pop(user, where);
@@ -387,42 +406,56 @@ void core(char *user, char *command, char *where, char *target, char *message)
         }
     }
 
-    // implements .tell
+    // USAGE: .help
+    if(!strncmp(message, ".help", 5)) {
+        printf("Calling HELP function.\n");
+        help(target, message, user);
     // USAGE: .tell NICK MESSAGE
-    // Next time NICK sends a PRIVMSG, bot will notify NICK of the message.
-    // Uses *where to determine where to send the PRIVMSG.
-    if(!strncmp(message, ".tell ", 5)) {
+    } else if (!strncmp(message, ".tell ", 6)) {
         printf("Calling TELL function.\n");
         int s = 6;
         while(message[s] != ' ' && message[s] != '\0') {
             s++;
         }
-        if(message[s] == '\0') return;
+        if(message[s] == '\0') return 0;
         else {
             message[s] = '\0';
             char *outmsg;
             switch(tell_push(where, &message[6], user, &message[s+1])) {
                 case 1: 
-                    asprintf(&outmsg, "%s: Sorry, something went wrong.", user);
+                    if(asprintf(
+                            &outmsg,
+                            "%s: Sorry, memory problems. Please try again.",
+                             user) < 0) return 1;
+
                     send_msg(where, outmsg);
                     break;
                 case 5:
-                    asprintf(&outmsg, "%s: Sorry, there are too many messages queued.",
-                                     user);
+                    if(asprintf(
+                            &outmsg,
+                            "%s: Sorry, there are too many messages queued.",
+                            user) < 0) return 1;
+
                     send_msg(where, outmsg); 
                     break;
                 case 6:
-                    asprintf(&outmsg, "%s: Sorry, %s has too many messages queued.", 
-                                    user, &message[6]);
+                    if(asprintf(
+                            &outmsg,
+                            "%s: Sorry, %s has too many messages queued.",
+                            user, &message[6]) < 0) return 1;
+
                     send_msg(where, outmsg); 
                     break;
                 default:
-                    asprintf(&outmsg, "%s: Message queued for %s.", user, &message[6]);
+                    if(asprintf(&outmsg, "%s: Message queued for %s.",
+                                user, &message[6]) < 0) return 1;
+
                     break;
             }
             free(outmsg);
         }
     }
+    return 0;
 }
 
 int main() {
@@ -534,8 +567,15 @@ int main() {
                                "[reply-to: %s] %s", user, command, where, 
                                                     target, message);
                         
-
-                        core(user, command, where, target, message);
+                        int error_code = core(user, command, where,
+                                              target, message);
+                        switch (error_code) {
+                            case 1:
+                                send_msg(where, "Sorry, something went wrong.");
+                                break;
+                            default:
+                                break;
+                        }
                     } /* if command is a PRIVMSG or a NOTICE */
                 } /* if msg begins with a : */
             } /* if we're reached the end of sbuf */
