@@ -24,7 +24,7 @@
 #include <netdb.h>
 #include <stdarg.h>
 
-#define NICK "Cendenbot"
+#define NICK "LanternBot"
 #define CHANNEL "#thomsonslantern"
 #define NETWORK "irc.freenode.net"
 
@@ -369,6 +369,23 @@ void core(char *user, char *command, char *where, char *target, char *message)
     // implements responding to tells
     int q = should_tell_pop(user, where);
     if (q >= 0) tell_pop(q);
+    
+    // implements .help (and !help)
+    // USAGE: .help, !help, .help tell, !help tell
+    // Gives information about commands.
+    if(!(strncmp(message, ".help", 5)&&(strncmp(message, "!help", 5)))) {
+        printf("Calling HELP function.\n");
+        int s = 6;
+        while(message[s] != ' ' && message[s] != '\0') {
+            s++;
+        }
+        if (s >= 10 && !strncmp(message, ".help tell", 4)) {
+            char *outmsg = "Tell Usage: .tell NICK MESSAGE";
+            send_msg(where, outmsg);
+        } else {
+            send_msg(where, "Help Usage: !help|.help( tell)?");
+        }
+    }
 
     // implements .tell
     // USAGE: .tell NICK MESSAGE
